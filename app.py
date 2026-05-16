@@ -40,19 +40,8 @@ def search_ydl_opts():
     return opts
 
 def stream_ydl_opts():
-    """스트림/다운로드용 — android client로 봇 감지 우회"""
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/116.0.0.0 Mobile Safari/537.36"
-            )
-        },
-    }
+    """스트림/다운로드용 기본 옵션 (android client 제거 — 포맷 충돌 방지)"""
+    opts = {"quiet": True, "no_warnings": True}
     if _COOKIES_FILE:
         opts["cookiefile"] = _COOKIES_FILE
     return opts
@@ -222,34 +211,35 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-# ── 공통: android → 기본 클라이언트 순서로 재시도 ────
-# 브라우저 호환 오디오 포맷 우선순위
-AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+# 포맷 폴백 순서 (앞에서부터 순서대로 시도)
+FORMAT_PRIORITY = [
+    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+    "best[ext=mp4]/best",
+    "worst",
+]
 
-def _get_info(video_id, extra_opts):
-    """android client → 기본 client 순서로 재시도해서 info 반환"""
-    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+def _get_info(video_id, extra_opts, is_download=False):
+    """포맷을 우선순위대로 시도, 전부 실패하면 마지막 에러 raise"""
+    yt_url   = f"https://www.youtube.com/watch?v={video_id}"
+    base     = stream_ydl_opts()
     last_err = None
 
-    # 시도 1: android client (봇 감지 우회 우선)
-    opts = stream_ydl_opts()
-    opts.update(extra_opts)
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(yt_url, download="outtmpl" in opts)
-    except Exception as e:
-        last_err = e
+    # 호출자가 format을 직접 지정한 경우 맨 앞에 추가
+    caller_fmt = extra_opts.pop("format", None)
+    candidates = ([caller_fmt] if caller_fmt else []) + FORMAT_PRIORITY
 
-    # 시도 2: 기본 client (포맷 호환성 우선)
-    opts2 = {"quiet": True, "no_warnings": True}
-    if _COOKIES_FILE:
-        opts2["cookiefile"] = _COOKIES_FILE
-    opts2.update(extra_opts)
-    try:
-        with yt_dlp.YoutubeDL(opts2) as ydl:
-            return ydl.extract_info(yt_url, download="outtmpl" in opts2)
-    except Exception as e:
-        last_err = e
+    for fmt in candidates:
+        opts = {**base, **extra_opts, "format": fmt}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(yt_url, download=is_download)
+        except Exception as e:
+            msg = str(e)
+            # 포맷 관련 에러면 다음 포맷으로, 그 외 에러는 즉시 raise
+            if "format" in msg.lower() or "not available" in msg.lower():
+                last_err = e
+                continue
+            raise
 
     raise last_err
 
@@ -257,13 +247,12 @@ def _get_info(video_id, extra_opts):
 @app.route("/api/stream/<video_id>")
 def stream(video_id):
     try:
-        info = _get_info(video_id, {"format": AUDIO_FORMAT, "skip_download": True})
+        info = _get_info(video_id, {"skip_download": True}, is_download=False)
 
-        # 오디오 URL 추출: 직접 URL → formats 목록 순서로 탐색
+        # 오디오 전용 URL 우선, 없으면 아무 URL
         audio_url = info.get("url")
         if not audio_url:
             for fmt in reversed(info.get("formats", [])):
-                # 오디오 전용 포맷 우선 (vcodec=none), 없으면 아무거나
                 if fmt.get("url") and fmt.get("acodec", "none") != "none":
                     audio_url = fmt["url"]
                     break
@@ -280,26 +269,19 @@ def stream(video_id):
 
 @app.route("/api/download/<video_id>")
 def download(video_id):
-    tmp_dir = tempfile.mkdtemp()
+    tmp_dir    = tempfile.mkdtemp()
     has_ffmpeg = ffmpeg_available()
+    extra      = {"outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s")}
 
     if has_ffmpeg:
-        extra = {
-            "format": AUDIO_FORMAT,
-            "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
-            "postprocessors": [{"key": "FFmpegExtractAudio",
-                                "preferredcodec": "mp3", "preferredquality": "192"}],
-        }
+        extra["postprocessors"] = [{"key": "FFmpegExtractAudio",
+                                    "preferredcodec": "mp3", "preferredquality": "192"}]
         target_ext, mime = ".mp3", "audio/mpeg"
     else:
-        extra = {
-            "format": AUDIO_FORMAT,
-            "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
-        }
         target_ext, mime = None, "audio/mp4"
 
     try:
-        info  = _get_info(video_id, extra)
+        info  = _get_info(video_id, extra, is_download=True)
         title = info.get("title", video_id)
 
         if target_ext:
