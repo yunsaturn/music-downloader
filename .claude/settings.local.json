@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(Get-ChildItem -Recurse \"C:\\\\1윤오성\\\\Claude projects\\\\음악다운\")",
-      "Bash(Select-Object FullName)"
+      "Bash(Select-Object FullName)",
+      "PowerShell(gh auth status 2>&1)",
+      "Bash(cd \"C:\\\\1윤오성\\\\Claude projects\\\\durian\" && tree -L 2 -I node_modules 2>/dev/null || find . -maxdepth 2 -not -path '*/node_modules/*' -not -path '*/.next/*' -not -path '*/.git/*' | sort)"
     ]
   }
 }
