@@ -8,6 +8,35 @@ import yt_dlp
 def ffmpeg_available():
     return shutil.which("ffmpeg") is not None
 
+# cookies.txt 경로 (프로젝트 루트에 있으면 자동 사용)
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
+
+def base_ydl_opts():
+    """모든 yt-dlp 요청에 공통 적용되는 옵션 (봇 감지 우회 포함)"""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        # android 클라이언트 → YouTube 봇 감지 우회에 효과적
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            }
+        },
+        # 최신 yt-dlp가 아닌 경우 대비 user-agent 설정
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/116.0.0.0 Mobile Safari/537.36"
+            )
+        },
+    }
+    # cookies.txt 있으면 자동 사용
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+    return opts
+
+
 app = Flask(__name__)
 
 def format_duration(seconds):
@@ -33,15 +62,14 @@ def search():
     if not q:
         return jsonify([])
 
-    ydl_opts = {
-        "quiet": True,
+    opts = base_ydl_opts()
+    opts.update({
         "extract_flat": True,
         "skip_download": True,
-        "no_warnings": True,
-    }
+    })
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             result = ydl.extract_info(f"ytsearch15:{q}", download=False)
         entries = result.get("entries", []) or []
         videos = []
@@ -62,17 +90,23 @@ def search():
 
 @app.route("/api/stream/<video_id>")
 def stream(video_id):
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
+    opts = base_ydl_opts()
+    opts.update({
         "format": "bestaudio/best",
         "skip_download": True,
-    }
+    })
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        audio_url = info.get("url") or info["formats"][-1]["url"]
+        # 오디오 전용 URL 추출
+        audio_url = info.get("url")
+        if not audio_url:
+            # formats 리스트에서 오디오 URL 탐색
+            for fmt in reversed(info.get("formats", [])):
+                if fmt.get("url"):
+                    audio_url = fmt["url"]
+                    break
         title = info.get("title", "")
         return jsonify({"url": audio_url, "title": title})
     except Exception as ex:
@@ -85,39 +119,29 @@ def download(video_id):
     output_template = os.path.join(tmp_dir, "%(title)s.%(ext)s")
     has_ffmpeg = ffmpeg_available()
 
+    opts = base_ydl_opts()
+    opts["outtmpl"] = output_template
+
     if has_ffmpeg:
-        # ffmpeg 있으면 MP3로 변환
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "format": "bestaudio/best",
-            "outtmpl": output_template,
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        }
+        opts["format"] = "bestaudio/best"
+        opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }]
         target_ext = ".mp3"
         mime = "audio/mpeg"
     else:
-        # ffmpeg 없으면 m4a(AAC) native 다운로드
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "format": "bestaudio[ext=m4a]/bestaudio/best",
-            "outtmpl": output_template,
-        }
-        target_ext = None   # 확장자는 다운 후 탐색
+        opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+        target_ext = None
         mime = "audio/mp4"
 
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get("title", video_id)
 
-        # 다운된 파일 찾기
         if target_ext:
             audio_files = [f for f in os.listdir(tmp_dir) if f.endswith(target_ext)]
         else:
@@ -128,7 +152,7 @@ def download(video_id):
             return jsonify({"error": "오디오 파일 변환/다운로드 실패"}), 500
 
         audio_path = os.path.join(tmp_dir, audio_files[0])
-        actual_ext = os.path.splitext(audio_files[0])[1]  # e.g. ".m4a"
+        actual_ext = os.path.splitext(audio_files[0])[1]
 
         @after_this_request
         def cleanup(response):
