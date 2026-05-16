@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Recurse \"C:\\\\1윤오성\\\\Claude projects\\\\음악다운\")",
+      "Bash(Select-Object FullName)"
+    ]
+  }
+}

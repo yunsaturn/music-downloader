@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>뮤직 다운</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <div class="app">
+
+    <!-- ── Hero Header ───────────────────────── -->
+    <header class="header">
+      <div class="header-inner">
+        <div class="logo">
+          <div class="logo-icon">♪</div>
+          <span class="logo-text">뮤직 다운</span>
+        </div>
+
+        <div class="search-wrap">
+          <div class="search-bar" id="search-bar">
+            <svg class="search-icon" viewBox="0 0 20 20" fill="none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M13.5 13.5L17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <input
+              id="search-input"
+              type="text"
+              placeholder="아티스트, 노래 제목을 검색하세요"
+              autocomplete="off"
+              inputmode="search"
+            />
+            <button id="clear-btn" class="clear-btn" aria-label="지우기">
+              <svg viewBox="0 0 16 16" fill="none">
+                <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Results ───────────────────────────── -->
+    <main class="results" id="results">
+
+      <!-- Empty / Welcome -->
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">🎵</div>
+        <p class="empty-title">음악을 검색해보세요</p>
+        <p class="empty-sub">YouTube에서 원하는 곡을 찾아 재생하거나 MP3로 저장하세요</p>
+      </div>
+
+      <!-- Loading -->
+      <div class="loading" id="loading" hidden>
+        <div class="loading-dots">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
+
+      <!-- List -->
+      <ul class="video-list" id="video-list"></ul>
+
+    </main>
+  </div>
+
+  <!-- ── Mini Player ────────────────────────── -->
+  <div class="player" id="player" hidden>
+    <div class="player-progress-wrap" id="progress-bar">
+      <div class="player-progress-track">
+        <div class="player-progress-fill" id="progress-fill">
+          <div class="progress-dot"></div>
+        </div>
+      </div>
+    </div>
+    <div class="player-body">
+      <div class="player-info">
+        <div class="player-thumb-wrap">
+          <img id="player-thumb" src="" alt="" />
+        </div>
+        <div class="player-meta">
+          <span id="player-title" class="player-title"></span>
+          <span id="player-time" class="player-time">0:00 / 0:00</span>
+        </div>
+      </div>
+      <div class="player-controls">
+        <button id="prev-btn" class="ctrl-btn" aria-label="이전">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+        </button>
+        <button id="play-pause-btn" class="ctrl-btn ctrl-main" aria-label="재생/일시정지">
+          <!-- icon swapped via JS innerHTML -->
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        </button>
+        <button id="next-btn" class="ctrl-btn" aria-label="다음">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2z"/></svg>
+        </button>
+      </div>
+    </div>
+    <audio id="audio"></audio>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
