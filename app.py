@@ -30,14 +30,21 @@ def _init_cookies():
 
 _init_cookies()
 
-# ── 공통 yt-dlp 옵션 ──────────────────────────────
-def base_ydl_opts():
+# ── yt-dlp 옵션 ───────────────────────────────────
+def search_ydl_opts():
+    """검색용 — android client 없이 기본 동작 (검색과 충돌함)"""
+    opts = {"quiet": True, "no_warnings": True,
+            "extract_flat": True, "skip_download": True}
+    if _COOKIES_FILE:
+        opts["cookiefile"] = _COOKIES_FILE
+    return opts
+
+def stream_ydl_opts():
+    """스트림/다운로드용 — android client로 봇 감지 우회"""
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {
-            "youtube": {"player_client": ["android", "web"]}
-        },
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
@@ -113,8 +120,7 @@ def search_via_youtube_api(q, api_key):
 
 # ── yt-dlp 검색 (fallback) ────────────────────────
 def search_via_ytdlp(q):
-    opts = base_ydl_opts()
-    opts.update({"extract_flat": True, "skip_download": True})
+    opts = search_ydl_opts()
     with yt_dlp.YoutubeDL(opts) as ydl:
         result = ydl.extract_info(f"ytsearch15:{q}", download=False)
     entries = result.get("entries", []) or []
@@ -218,7 +224,7 @@ def search():
 
 @app.route("/api/stream/<video_id>")
 def stream(video_id):
-    opts = base_ydl_opts()
+    opts = stream_ydl_opts()
     opts.update({"format": "bestaudio/best", "skip_download": True})
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -237,7 +243,7 @@ def stream(video_id):
 def download(video_id):
     tmp_dir = tempfile.mkdtemp()
     has_ffmpeg = ffmpeg_available()
-    opts = base_ydl_opts()
+    opts = stream_ydl_opts()
     opts["outtmpl"] = os.path.join(tmp_dir, "%(title)s.%(ext)s")
 
     if has_ffmpeg:
