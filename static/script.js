@@ -221,31 +221,50 @@ progressBar.addEventListener("click", e => {
 });
 
 /* ── 다운로드 ─────────────────────────────────────── */
-function downloadTrack(index) {
+const DL_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 4v12m0 0-4-4m4 4 4-4"/><path d="M4 20h16"/></svg>`;
+
+const SPIN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+  <circle cx="12" cy="12" r="9" stroke-dasharray="56" stroke-dashoffset="20"
+    style="animation:spin .9s linear infinite;transform-origin:center"/></svg>`;
+
+async function downloadTrack(index) {
   const v   = results[index];
   const btn = videoList.querySelector(`.dl-btn[data-index="${index}"]`);
   if (!btn) return;
 
-  const DL_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-    stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 4v12m0 0-4-4m4 4 4-4"/><path d="M4 20h16"/></svg>`;
-
-  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <circle cx="12" cy="12" r="9" stroke-dasharray="56" stroke-dashoffset="20"
-      style="animation:spin .9s linear infinite;transform-origin:center"/></svg>`;
+  btn.innerHTML = SPIN_SVG;
   btn.classList.add("loading-btn");
 
-  const a = document.createElement("a");
-  a.href = `/api/download/${encodeURIComponent(v.video_id)}`;
-  a.download = v.title + ".mp3";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  try {
+    const res = await fetch(`/api/download/${encodeURIComponent(v.video_id)}`);
 
-  setTimeout(() => {
+    if (res.ok) {
+      // 성공 → blob으로 받아서 저장
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = v.title + ".mp3";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403 || data.error === "COOKIE_REQUIRED") {
+        showToast("⚠️ 다운로드는 서버 쿠키 설정이 필요합니다.\nRailway Variables에 COOKIES_CONTENT를 추가해주세요.");
+      } else {
+        showToast("다운로드 실패: " + (data.error || res.status));
+      }
+    }
+  } catch (e) {
+    showToast("네트워크 오류: " + e.message);
+  } finally {
     btn.innerHTML = DL_SVG;
     btn.classList.remove("loading-btn");
-  }, 5000);
+  }
 }
 
 /* ── UI 헬퍼 ─────────────────────────────────────── */
@@ -285,6 +304,20 @@ function showLoading() {
   emptyState.hidden   = true;
   videoList.innerHTML = "";
   loadingEl.hidden    = false;
+}
+
+/* ── 토스트 알림 ─────────────────────────────────── */
+function showToast(msg) {
+  let t = document.getElementById("toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toast";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 4000);
 }
 
 function fmt(sec) {

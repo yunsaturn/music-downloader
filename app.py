@@ -211,68 +211,54 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-# 포맷 폴백 순서 (앞에서부터 순서대로 시도)
-FORMAT_PRIORITY = [
-    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
-    "best[ext=mp4]/best",
-    "worst",
-]
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
 
-def _get_info(video_id, extra_opts, is_download=False):
-    """포맷을 우선순위대로 시도, 전부 실패하면 마지막 에러 raise"""
+# 다운로드 시 시도할 player_client 순서
+# ios → 데이터센터 IP 차단 우회 효과 있음
+# web → 일반적인 클라이언트
+# None → 클라이언트 지정 없음 (기본값)
+DOWNLOAD_CLIENTS = ["ios", "mweb", "web", None]
+
+def _make_dl_opts(extra, client=None):
+    """player_client 지정 가능한 yt-dlp 옵션 생성"""
+    opts = {"quiet": True, "no_warnings": True, **extra}
+    if client:
+        opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+    if _COOKIES_FILE:
+        opts["cookiefile"] = _COOKIES_FILE
+    return opts
+
+def _download_with_fallback(video_id, extra):
+    """여러 player_client로 순차 시도 → 성공하면 info 반환"""
     yt_url   = f"https://www.youtube.com/watch?v={video_id}"
-    base     = stream_ydl_opts()
     last_err = None
-
-    # 호출자가 format을 직접 지정한 경우 맨 앞에 추가
-    caller_fmt = extra_opts.pop("format", None)
-    candidates = ([caller_fmt] if caller_fmt else []) + FORMAT_PRIORITY
-
-    for fmt in candidates:
-        opts = {**base, **extra_opts, "format": fmt}
+    for client in DOWNLOAD_CLIENTS:
+        opts = _make_dl_opts(extra, client)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(yt_url, download=is_download)
+                info = ydl.extract_info(yt_url, download=True)
+            print(f"[download] 성공 client={client}")
+            return info
         except Exception as e:
-            msg = str(e)
-            # 포맷 관련 에러면 다음 포맷으로, 그 외 에러는 즉시 raise
-            if "format" in msg.lower() or "not available" in msg.lower():
-                last_err = e
-                continue
-            raise
-
+            print(f"[download] 실패 client={client}: {e}")
+            last_err = e
     raise last_err
 
 
 @app.route("/api/stream/<video_id>")
 def stream(video_id):
-    try:
-        info = _get_info(video_id, {"skip_download": True}, is_download=False)
-
-        # 오디오 전용 URL 우선, 없으면 아무 URL
-        audio_url = info.get("url")
-        if not audio_url:
-            for fmt in reversed(info.get("formats", [])):
-                if fmt.get("url") and fmt.get("acodec", "none") != "none":
-                    audio_url = fmt["url"]
-                    break
-        if not audio_url:
-            for fmt in reversed(info.get("formats", [])):
-                if fmt.get("url"):
-                    audio_url = fmt["url"]
-                    break
-
-        return jsonify({"url": audio_url, "title": info.get("title", "")})
-    except Exception as ex:
-        return jsonify({"error": str(ex)}), 500
+    """재생은 IFrame API가 담당 — 이 엔드포인트는 미사용"""
+    return jsonify({"error": "재생은 브라우저 IFrame API를 사용합니다"}), 400
 
 
 @app.route("/api/download/<video_id>")
 def download(video_id):
     tmp_dir    = tempfile.mkdtemp()
     has_ffmpeg = ffmpeg_available()
-    extra      = {"outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s")}
-
+    extra      = {
+        "format":  AUDIO_FORMAT,
+        "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
+    }
     if has_ffmpeg:
         extra["postprocessors"] = [{"key": "FFmpegExtractAudio",
                                     "preferredcodec": "mp3", "preferredquality": "192"}]
@@ -281,7 +267,7 @@ def download(video_id):
         target_ext, mime = None, "audio/mp4"
 
     try:
-        info  = _get_info(video_id, extra, is_download=True)
+        info  = _download_with_fallback(video_id, extra)
         title = info.get("title", video_id)
 
         if target_ext:
@@ -290,7 +276,7 @@ def download(video_id):
             files = [f for f in os.listdir(tmp_dir)
                      if f.endswith((".m4a", ".webm", ".ogg", ".opus", ".mp3"))]
         if not files:
-            return jsonify({"error": "변환 실패"}), 500
+            return jsonify({"error": "NO_FILE"}), 500
 
         audio_path = os.path.join(tmp_dir, files[0])
         actual_ext = os.path.splitext(files[0])[1]
@@ -305,8 +291,13 @@ def download(video_id):
         safe    = "".join(c for c in title if c not in r'\/:*?"<>|').strip()
         dl_name = f"{safe}.mp3" if has_ffmpeg else f"{safe}{actual_ext}"
         return send_file(audio_path, as_attachment=True, download_name=dl_name, mimetype=mime)
+
     except Exception as ex:
-        return jsonify({"error": str(ex)}), 500
+        err = str(ex)
+        # 봇 감지 / 인증 필요 에러 → 사용자 친화적 메시지
+        if "sign in" in err.lower() or "bot" in err.lower() or "confirm" in err.lower():
+            return jsonify({"error": "COOKIE_REQUIRED"}), 403
+        return jsonify({"error": err}), 500
 
 
 if __name__ == "__main__":

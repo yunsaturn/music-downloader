@@ -555,8 +555,32 @@ html, body {
 .ctrl-main:hover { background: var(--accent2); color: #fff; }
 
 /* 다운로드 버튼 스피너 */
-@keyframes spin {
-  to { transform: rotate(360deg); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── 토스트 알림 ─────────────────────────────────── */
+#toast {
+  position: fixed;
+  bottom: calc(var(--player-h) + env(safe-area-inset-bottom) + 16px);
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: #1A1614;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  text-align: center;
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+  z-index: 300;
+  max-width: min(360px, 90vw);
+}
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 /* ── 모바일 최적화 (기본 = 모바일 우선) ─────────────── */
