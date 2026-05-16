@@ -222,43 +222,85 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-@app.route("/api/stream/<video_id>")
-def stream(video_id):
+# ── 공통: android → 기본 클라이언트 순서로 재시도 ────
+# 브라우저 호환 오디오 포맷 우선순위
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+
+def _get_info(video_id, extra_opts):
+    """android client → 기본 client 순서로 재시도해서 info 반환"""
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    last_err = None
+
+    # 시도 1: android client (봇 감지 우회 우선)
     opts = stream_ydl_opts()
-    opts.update({"format": "bestaudio/best", "skip_download": True})
+    opts.update(extra_opts)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            return ydl.extract_info(yt_url, download="outtmpl" in opts)
+    except Exception as e:
+        last_err = e
+
+    # 시도 2: 기본 client (포맷 호환성 우선)
+    opts2 = {"quiet": True, "no_warnings": True}
+    if _COOKIES_FILE:
+        opts2["cookiefile"] = _COOKIES_FILE
+    opts2.update(extra_opts)
+    try:
+        with yt_dlp.YoutubeDL(opts2) as ydl:
+            return ydl.extract_info(yt_url, download="outtmpl" in opts2)
+    except Exception as e:
+        last_err = e
+
+    raise last_err
+
+
+@app.route("/api/stream/<video_id>")
+def stream(video_id):
+    try:
+        info = _get_info(video_id, {"format": AUDIO_FORMAT, "skip_download": True})
+
+        # 오디오 URL 추출: 직접 URL → formats 목록 순서로 탐색
         audio_url = info.get("url")
+        if not audio_url:
+            for fmt in reversed(info.get("formats", [])):
+                # 오디오 전용 포맷 우선 (vcodec=none), 없으면 아무거나
+                if fmt.get("url") and fmt.get("acodec", "none") != "none":
+                    audio_url = fmt["url"]
+                    break
         if not audio_url:
             for fmt in reversed(info.get("formats", [])):
                 if fmt.get("url"):
                     audio_url = fmt["url"]
                     break
+
         return jsonify({"url": audio_url, "title": info.get("title", "")})
     except Exception as ex:
         return jsonify({"error": str(ex)}), 500
+
 
 @app.route("/api/download/<video_id>")
 def download(video_id):
     tmp_dir = tempfile.mkdtemp()
     has_ffmpeg = ffmpeg_available()
-    opts = stream_ydl_opts()
-    opts["outtmpl"] = os.path.join(tmp_dir, "%(title)s.%(ext)s")
 
     if has_ffmpeg:
-        opts["format"] = "bestaudio/best"
-        opts["postprocessors"] = [{"key": "FFmpegExtractAudio",
-                                   "preferredcodec": "mp3", "preferredquality": "192"}]
+        extra = {
+            "format": AUDIO_FORMAT,
+            "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
+            "postprocessors": [{"key": "FFmpegExtractAudio",
+                                "preferredcodec": "mp3", "preferredquality": "192"}],
+        }
         target_ext, mime = ".mp3", "audio/mpeg"
     else:
-        opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+        extra = {
+            "format": AUDIO_FORMAT,
+            "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
+        }
         target_ext, mime = None, "audio/mp4"
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-            title = info.get("title", video_id)
+        info  = _get_info(video_id, extra)
+        title = info.get("title", video_id)
 
         if target_ext:
             files = [f for f in os.listdir(tmp_dir) if f.endswith(target_ext)]
@@ -278,7 +320,7 @@ def download(video_id):
             ), daemon=True).start()
             return response
 
-        safe = "".join(c for c in title if c not in r'\/:*?"<>|').strip()
+        safe    = "".join(c for c in title if c not in r'\/:*?"<>|').strip()
         dl_name = f"{safe}.mp3" if has_ffmpeg else f"{safe}{actual_ext}"
         return send_file(audio_path, as_attachment=True, download_name=dl_name, mimetype=mime)
     except Exception as ex:
