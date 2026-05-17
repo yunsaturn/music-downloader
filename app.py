@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import tempfile
 import threading
 import time
@@ -223,6 +224,16 @@ def search():
 COBALT_API  = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools").rstrip("/")
 COBALT_AUTH = os.environ.get("COBALT_API_KEY", "").strip()
 
+def _cobalt_wake_up():
+    """Render 무료 플랜은 15분 미사용 시 sleep → GET /로 깨움 (콜드스타트 60s+)"""
+    try:
+        req = urllib.request.Request(COBALT_API + "/", headers={"User-Agent": "music-downloader/1.0"})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            r.read(64)
+        print(f"[cobalt] wake-up OK")
+    except Exception as e:
+        print(f"[cobalt] wake-up 실패 (계속 진행): {e}")
+
 def cobalt_get_download_url(video_id):
     """cobalt API에 요청해 MP3 다운로드 URL + 파일명 반환"""
     yt_url  = f"https://www.youtube.com/watch?v={video_id}"
@@ -242,15 +253,28 @@ def cobalt_get_download_url(video_id):
     if COBALT_AUTH:
         headers["Authorization"] = f"Api-Key {COBALT_AUTH}"
 
-    req = urllib.request.Request(COBALT_API + "/", data=payload, headers=headers, method="POST")
+    def _post(timeout):
+        req = urllib.request.Request(COBALT_API + "/", data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+
+    # 1차: 빠른 응답 기대 (이미 깨어있는 경우)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read())
+        result = _post(timeout=45)
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+        # 타임아웃 → Render가 sleep 중일 가능성. 깨우고 한 번 더.
+        print(f"[cobalt] 1차 타임아웃, sleep 깨우는 중: {e}")
+        _cobalt_wake_up()
+        try:
+            result = _post(timeout=90)
+        except urllib.error.HTTPError as e2:
+            body = e2.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"cobalt HTTP {e2.code}: {body[:200]}")
+        except Exception as e2:
+            raise RuntimeError(f"cobalt 연결 실패: {e2}")
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"cobalt HTTP {e.code}: {body[:200]}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"cobalt 연결 실패 ({COBALT_API}): {e.reason}")
 
     status = result.get("status")
     print(f"[cobalt] status={status} api={COBALT_API}")
