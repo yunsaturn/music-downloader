@@ -256,27 +256,45 @@ def stream(video_id):
 
 @app.route("/api/debug/<video_id>")
 def debug_formats(video_id):
-    """쿠키·포맷 진단용 엔드포인트 (배포 후 브라우저에서 직접 호출)"""
+    """쿠키·포맷 진단용 — 각 player_client별로 가용 포맷 수를 보고함"""
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
-    opts = {**stream_ydl_opts(), "skip_download": True, "quiet": False}
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(yt_url, download=False)
-        fmts = [
-            {"id": f.get("format_id"), "ext": f.get("ext"),
-             "acodec": f.get("acodec"), "vcodec": f.get("vcodec"),
-             "abr": f.get("abr"), "filesize": f.get("filesize")}
-            for f in (info.get("formats") or [])
-        ]
-        return jsonify({
-            "cookie_file": _COOKIES_FILE,
-            "cookie_loaded": bool(_COOKIES_FILE),
-            "title": info.get("title"),
-            "format_count": len(fmts),
-            "formats": fmts,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e), "cookie_file": _COOKIES_FILE}), 500
+    results = {"cookie_file": _COOKIES_FILE, "cookie_loaded": bool(_COOKIES_FILE), "clients": {}}
+
+    cookie_preview = None
+    if _COOKIES_FILE and os.path.exists(_COOKIES_FILE):
+        try:
+            with open(_COOKIES_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            results["cookie_lines"]    = len(lines)
+            results["cookie_first"]    = lines[0].rstrip() if lines else ""
+            results["cookie_has_yt"]   = any("youtube" in l for l in lines)
+        except Exception as e:
+            results["cookie_read_err"] = str(e)
+
+    # process=False → 포맷 선택을 건너뛰고 원본 응답 그대로
+    for client in [None, "ios", "mweb", "web", "android"]:
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+        if _COOKIES_FILE:
+            opts["cookiefile"] = _COOKIES_FILE
+        if client:
+            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(yt_url, download=False, process=False)
+            fmts = info.get("formats") or []
+            audio_only = [f for f in fmts
+                          if (f.get("acodec") and f.get("acodec") != "none")
+                          and (not f.get("vcodec") or f.get("vcodec") == "none")]
+            results["clients"][client or "default"] = {
+                "title": info.get("title"),
+                "total_formats": len(fmts),
+                "audio_only_formats": len(audio_only),
+                "sample_format_ids": [f.get("format_id") for f in fmts[:5]],
+            }
+        except Exception as e:
+            results["clients"][client or "default"] = {"error": str(e)[:200]}
+
+    return jsonify(results)
 
 
 @app.route("/api/download/<video_id>")
