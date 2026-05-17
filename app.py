@@ -218,73 +218,40 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-# ── cobalt.tools API (셀프호스팅 인스턴스 권장) ───
-# Railway IP는 YouTube에 직접 접근 불가 → cobalt 인스턴스가 대신 추출.
-# COBALT_API_URL 환경변수로 본인이 호스팅한 cobalt 주소 지정.
-COBALT_API  = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools").rstrip("/")
-COBALT_AUTH = os.environ.get("COBALT_API_KEY", "").strip()
+# ── yt-dlp + 주거지/회전 프록시 ─────────────────
+# PROXY_URL 환경변수: 예) http://user:pass@p.webshare.io:80
+# 프록시 경유로 가정용 IP에서 접근하는 효과 → YouTube 봇 차단 우회
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 
-def _cobalt_wake_up():
-    """Render 무료 플랜은 15분 미사용 시 sleep → GET /로 깨움 (콜드스타트 60s+)"""
-    try:
-        req = urllib.request.Request(COBALT_API + "/", headers={"User-Agent": "music-downloader/1.0"})
-        with urllib.request.urlopen(req, timeout=90) as r:
-            r.read(64)
-        print(f"[cobalt] wake-up OK")
-    except Exception as e:
-        print(f"[cobalt] wake-up 실패 (계속 진행): {e}")
+AUDIO_FORMAT      = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+DOWNLOAD_CLIENTS  = ["ios", "mweb", "web", None]
 
-def cobalt_get_download_url(video_id):
-    """cobalt API에 요청해 MP3 다운로드 URL + 파일명 반환"""
-    yt_url  = f"https://www.youtube.com/watch?v={video_id}"
-    payload = json.dumps({
-        "url":           yt_url,
-        "downloadMode":  "audio",
-        "audioFormat":   "mp3",
-        "audioBitrate":  "256",
-        "filenameStyle": "basic",
-    }).encode("utf-8")
+def _make_dl_opts(extra, client=None):
+    """프록시·쿠키·player_client 포함한 yt-dlp 옵션"""
+    opts = {"quiet": True, "no_warnings": True, **extra}
+    if client:
+        opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+    if _COOKIES_FILE:
+        opts["cookiefile"] = _COOKIES_FILE
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
+    return opts
 
-    headers = {
-        "Content-Type": "application/json",
-        "Accept":       "application/json",
-        "User-Agent":   "music-downloader/1.0",
-    }
-    if COBALT_AUTH:
-        headers["Authorization"] = f"Api-Key {COBALT_AUTH}"
-
-    def _post(timeout):
-        req = urllib.request.Request(COBALT_API + "/", data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
-
-    # 1차: 빠른 응답 기대 (이미 깨어있는 경우)
-    try:
-        result = _post(timeout=45)
-    except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
-        # 타임아웃 → Render가 sleep 중일 가능성. 깨우고 한 번 더.
-        print(f"[cobalt] 1차 타임아웃, sleep 깨우는 중: {e}")
-        _cobalt_wake_up()
+def yt_dlp_download(video_id, extra):
+    """player_client 순차 fallback으로 다운로드 시도"""
+    yt_url   = f"https://www.youtube.com/watch?v={video_id}"
+    last_err = None
+    for client in DOWNLOAD_CLIENTS:
+        opts = _make_dl_opts(extra, client)
         try:
-            result = _post(timeout=90)
-        except urllib.error.HTTPError as e2:
-            body = e2.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"cobalt HTTP {e2.code}: {body[:200]}")
-        except Exception as e2:
-            raise RuntimeError(f"cobalt 연결 실패: {e2}")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"cobalt HTTP {e.code}: {body[:200]}")
-
-    status = result.get("status")
-    print(f"[cobalt] status={status} api={COBALT_API}")
-
-    if status in ("tunnel", "redirect"):
-        return result["url"], result.get("filename") or f"{video_id}.mp3"
-    if status == "error":
-        err  = result.get("error", {}) or {}
-        raise RuntimeError(f"cobalt error: {err.get('code', 'unknown')}")
-    raise RuntimeError(f"cobalt unsupported status: {status}")
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(yt_url, download=True)
+            print(f"[download] 성공 client={client} proxy={'on' if PROXY_URL else 'off'}")
+            return info
+        except Exception as e:
+            print(f"[download] 실패 client={client}: {str(e)[:120]}")
+            last_err = e
+    raise last_err
 
 
 @app.route("/api/stream/<video_id>")
@@ -338,53 +305,58 @@ def debug_formats(video_id):
 
 @app.route("/api/download/<video_id>")
 def download(video_id):
-    """셀프호스팅 cobalt 인스턴스로 추출한 MP3를 클라이언트로 스트리밍"""
+    """yt-dlp + 프록시(가정용 IP)로 MP3 추출 → 클라이언트로 전송"""
+    tmp_dir    = tempfile.mkdtemp()
+    has_ffmpeg = ffmpeg_available()
+    extra      = {
+        "format":  AUDIO_FORMAT,
+        "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
+    }
+    if has_ffmpeg:
+        extra["postprocessors"] = [{
+            "key":              "FFmpegExtractAudio",
+            "preferredcodec":   "mp3",
+            "preferredquality": "192",
+        }]
+        target_ext, mime = ".mp3", "audio/mpeg"
+    else:
+        target_ext, mime = None, "audio/mp4"
+
     try:
-        file_url, filename = cobalt_get_download_url(video_id)
+        info  = yt_dlp_download(video_id, extra)
+        title = info.get("title", video_id)
+
+        if target_ext:
+            files = [f for f in os.listdir(tmp_dir) if f.endswith(target_ext)]
+        else:
+            files = [f for f in os.listdir(tmp_dir)
+                     if f.endswith((".m4a", ".webm", ".ogg", ".opus", ".mp3"))]
+        if not files:
+            return jsonify({"error": "NO_FILE"}), 500
+
+        audio_path = os.path.join(tmp_dir, files[0])
+        actual_ext = os.path.splitext(files[0])[1]
+
+        @after_this_request
+        def cleanup(response):
+            threading.Thread(target=lambda: (
+                os.remove(audio_path), os.rmdir(tmp_dir)
+            ), daemon=True).start()
+            return response
+
+        safe    = "".join(c for c in title if c not in r'\/:*?"<>|').strip() or video_id
+        dl_name = f"{safe}.mp3" if has_ffmpeg else f"{safe}{actual_ext}"
+        return send_file(audio_path, as_attachment=True, download_name=dl_name, mimetype=mime)
+
     except Exception as ex:
         err = str(ex)
-        print(f"[download] cobalt 실패: {err}")
         low = err.lower()
-        if "rate" in low or "429" in low:
-            return jsonify({"error": "RATE_LIMITED"}), 429
-        if "401" in low or "403" in low or "auth" in low:
-            return jsonify({"error": "COBALT_AUTH_REQUIRED"}), 403
-        if "연결 실패" in err or "connection" in low:
-            return jsonify({"error": "COBALT_UNREACHABLE"}), 502
-        return jsonify({"error": err}), 502
-
-    # cobalt이 준 URL에서 파일을 스트리밍해 클라이언트로 전달
-    try:
-        upstream = urllib.request.urlopen(
-            urllib.request.Request(file_url, headers={"User-Agent": "music-downloader/1.0"}),
-            timeout=180,
-        )
-    except Exception as ex:
-        return jsonify({"error": f"파일 다운로드 실패: {ex}"}), 502
-
-    def stream():
-        try:
-            while True:
-                chunk = upstream.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            upstream.close()
-
-    safe = "".join(c for c in filename if c not in r'\/:*?"<>|').strip() or f"{video_id}.mp3"
-    # 한글 파일명을 위해 RFC 5987 인코딩 병행
-    encoded   = urllib.parse.quote(safe)
-    disposition = f"attachment; filename=\"{video_id}.mp3\"; filename*=UTF-8''{encoded}"
-
-    return Response(
-        stream(),
-        mimetype="audio/mpeg",
-        headers={
-            "Content-Disposition": disposition,
-            "Cache-Control":       "no-store",
-        },
-    )
+        print(f"[download] yt-dlp 실패: {err[:200]}")
+        if "sign in" in low or "bot" in low or "confirm" in low:
+            return jsonify({"error": "BOT_DETECTED"}), 403
+        if "format" in low and "not available" in low:
+            return jsonify({"error": "BLOCKED"}), 502
+        return jsonify({"error": err[:300]}), 500
 
 
 if __name__ == "__main__":

@@ -253,12 +253,10 @@ async function downloadTrack(index) {
       URL.revokeObjectURL(url);
     } else {
       const data = await res.json().catch(() => ({}));
-      if (res.status === 429 || data.error === "RATE_LIMITED") {
-        showToast("⏳ 변환 서버가 일시적으로 바쁩니다. 잠시 후 다시 시도해주세요.");
-      } else if (data.error === "COBALT_UNREACHABLE") {
-        showToast("🔌 다운로드 서버에 연결할 수 없습니다.\n관리자: COBALT_API_URL 설정을 확인해주세요.");
-      } else if (data.error === "COBALT_AUTH_REQUIRED") {
-        showToast("🔑 다운로드 API 키 설정이 필요합니다.\n관리자: COBALT_API_KEY 환경변수 추가 필요");
+      if (data.error === "BOT_DETECTED") {
+        showToast("🤖 YouTube가 봇으로 감지했습니다.\n관리자: PROXY_URL/쿠키 갱신 필요");
+      } else if (data.error === "BLOCKED") {
+        showToast("🚧 이 영상은 현재 IP에서 추출 불가합니다.\n프록시 설정을 확인해주세요");
       } else {
         showToast("다운로드 실패: " + (data.error || res.status));
       }
