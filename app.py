@@ -5,6 +5,8 @@ import re
 import shutil
 import tempfile
 import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from flask import Flask, render_template, request, jsonify, send_file, Response, after_this_request
@@ -215,49 +217,76 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-# ── cobalt.tools API ─────────────────────────────
-# Railway 데이터센터 IP는 YouTube에서 미디어 URL을 받지 못하므로
-# cobalt.tools 서버가 대신 추출해주는 방식으로 우회
-COBALT_API  = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools").rstrip("/")
-COBALT_AUTH = os.environ.get("COBALT_API_KEY", "").strip()
+# ── y2mate.com 비공식 API ────────────────────────
+# Railway IP가 YouTube 직접 접근은 차단되지만, y2mate.com 서버는
+# 자체 인프라(주거지 프록시 + 쿠키 풀)로 추출 가능. 우리는 그 결과만 받아옴.
+Y2MATE_BASE    = "https://www.y2mate.com"
+Y2MATE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Origin":           Y2MATE_BASE,
+    "Referer":          Y2MATE_BASE + "/",
+    "Accept":           "*/*",
+    "Accept-Language":  "en-US,en;q=0.9",
+    "Content-Type":     "application/x-www-form-urlencoded; charset=UTF-8",
+    "X-Requested-With": "XMLHttpRequest",
+}
 
-def cobalt_get_download_url(video_id):
-    """cobalt API에 요청해서 MP3 다운로드 URL과 파일명 반환"""
-    yt_url  = f"https://www.youtube.com/watch?v={video_id}"
-    payload = json.dumps({
-        "url":           yt_url,
-        "downloadMode":  "audio",
-        "audioFormat":   "mp3",
-        "audioBitrate":  "256",
-        "filenameStyle": "basic",
-    }).encode("utf-8")
+def _y2mate_post(path, form):
+    """y2mate 엔드포인트에 form-encoded POST 후 JSON 디코드"""
+    body = urllib.parse.urlencode(form).encode("utf-8")
+    req  = urllib.request.Request(Y2MATE_BASE + path, data=body, headers=Y2MATE_HEADERS, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
 
-    headers = {
-        "Content-Type": "application/json",
-        "Accept":       "application/json",
-        "User-Agent":   "music-downloader/1.0",
-    }
-    if COBALT_AUTH:
-        headers["Authorization"] = f"Api-Key {COBALT_AUTH}"
+def y2mate_get_download_url(video_id):
+    """y2mate API 2단계 호출 → MP3 다운로드 URL + 파일명 반환"""
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    req = urllib.request.Request(COBALT_API + "/", data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"cobalt HTTP {e.code}: {body[:200]}")
+    # 1) analyze: 영상 메타데이터 + 포맷별 link id(k) 수신
+    analyze = _y2mate_post("/mates/analyzeV2/ajax", {
+        "k_query": yt_url,
+        "k_page":  "home",
+        "hl":      "en",
+        "q_auto":  "0",
+    })
+    if analyze.get("status") != "ok":
+        raise RuntimeError(f"y2mate analyze 실패: {analyze.get('mess') or 'unknown'}")
 
-    status = result.get("status")
-    print(f"[cobalt] status={status}")
+    title = analyze.get("title") or video_id
+    vid   = analyze.get("vid") or video_id
 
-    if status in ("tunnel", "redirect"):
-        return result["url"], result.get("filename") or f"{video_id}.mp3"
-    if status == "error":
-        err  = result.get("error", {}) or {}
-        code = err.get("code", "unknown")
-        raise RuntimeError(f"cobalt error: {code}")
-    raise RuntimeError(f"cobalt unsupported status: {status}")
+    mp3_formats = ((analyze.get("links") or {}).get("mp3")) or {}
+    if not mp3_formats:
+        raise RuntimeError("y2mate: mp3 포맷이 없음")
+
+    # mp3128 / mp3192 / mp3320 중 비트레이트 가장 높은 것
+    def _bitrate(key):
+        m = re.search(r"(\d+)", key or "")
+        return int(m.group(1)) if m else 0
+
+    best_key = max(mp3_formats.keys(), key=_bitrate)
+    link_id  = mp3_formats[best_key].get("k")
+    if not link_id:
+        raise RuntimeError("y2mate: link id 없음")
+
+    print(f"[y2mate] vid={vid} title={title!r} 포맷={best_key}")
+
+    # 2) convert: CONVERTING → CONVERTED 까지 폴링 (보통 1~5초)
+    for attempt in range(15):
+        convert = _y2mate_post("/mates/convertV2/index", {"vid": vid, "k": link_id})
+        c_status = (convert.get("c_status") or "").upper()
+        if c_status == "CONVERTED" or convert.get("dlink"):
+            dlink = convert.get("dlink")
+            if not dlink:
+                raise RuntimeError("y2mate: dlink 없음")
+            return dlink, f"{title}.mp3"
+        if c_status in ("CONVERTING", "WAITING", "OK", ""):
+            time.sleep(2)
+            continue
+        raise RuntimeError(f"y2mate convert 실패: c_status={c_status} mess={convert.get('mess')}")
+
+    raise RuntimeError("y2mate convert 시간 초과")
 
 
 @app.route("/api/stream/<video_id>")
@@ -311,18 +340,17 @@ def debug_formats(video_id):
 
 @app.route("/api/download/<video_id>")
 def download(video_id):
-    """cobalt.tools API로 추출한 MP3를 클라이언트로 스트리밍"""
+    """y2mate.com 비공식 API로 추출한 MP3를 클라이언트로 스트리밍"""
     try:
-        file_url, filename = cobalt_get_download_url(video_id)
+        file_url, filename = y2mate_get_download_url(video_id)
     except Exception as ex:
         err = str(ex)
-        print(f"[download] cobalt 실패: {err}")
-        # 봇 차단성 에러 메시지 매핑
+        print(f"[download] y2mate 실패: {err}")
         low = err.lower()
         if "rate" in low or "429" in low:
             return jsonify({"error": "RATE_LIMITED"}), 429
-        if "auth" in low or "401" in low or "403" in low:
-            return jsonify({"error": "COBALT_AUTH_REQUIRED"}), 403
+        if "403" in low or "blocked" in low or "cloudflare" in low:
+            return jsonify({"error": "BLOCKED"}), 403
         return jsonify({"error": err}), 502
 
     # cobalt이 준 URL에서 파일을 스트리밍해 클라이언트로 전달

@@ -254,9 +254,9 @@ async function downloadTrack(index) {
     } else {
       const data = await res.json().catch(() => ({}));
       if (res.status === 429 || data.error === "RATE_LIMITED") {
-        showToast("⏳ 다운로드 서버가 일시적으로 바쁩니다. 잠시 후 다시 시도해주세요.");
-      } else if (data.error === "COBALT_AUTH_REQUIRED") {
-        showToast("🔑 다운로드 API 키 설정이 필요합니다. (관리자: COBALT_API_KEY)");
+        showToast("⏳ 변환 서버가 일시적으로 바쁩니다. 잠시 후 다시 시도해주세요.");
+      } else if (data.error === "BLOCKED") {
+        showToast("🚧 변환 서비스가 일시적으로 차단되었습니다. 잠시 후 다시 시도해 주세요.");
       } else {
         showToast("다운로드 실패: " + (data.error || res.status));
       }
