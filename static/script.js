@@ -254,7 +254,9 @@ async function downloadTrack(index) {
     } else {
       const data = await res.json().catch(() => ({}));
       if (res.status === 403 || data.error === "COOKIE_REQUIRED") {
-        showToast("⚠️ 다운로드는 서버 쿠키 설정이 필요합니다.\nRailway Variables에 COOKIES_CONTENT를 추가해주세요.");
+        showToast("🍪 YouTube 쿠키 설정이 필요합니다.\n\nRailway → Variables → COOKIES_CONTENT 추가 후 재시도해 주세요.");
+      } else if (data.error && data.error.includes("not available")) {
+        showToast("🍪 서버 IP가 YouTube에 차단되었습니다.\nRailway Variables에 COOKIES_CONTENT(쿠키)를 추가하면 해결됩니다.");
       } else {
         showToast("다운로드 실패: " + (data.error || res.status));
       }
