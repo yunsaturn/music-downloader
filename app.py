@@ -153,7 +153,7 @@ def _make_og_image():
         return ImageFont.load_default()
 
     draw.text((210, 315), "♪",  fill=WHITE,  font=load_font(220),      anchor="mm")
-    draw.text((810, 230), "뮤직 다운",        fill=DARK,   font=load_font(82, bold=True), anchor="mm")
+    draw.text((810, 230), "뮤직온",            fill=DARK,   font=load_font(82, bold=True), anchor="mm")
     draw.text((810, 330), "YouTube 음악 검색 · 재생",
               fill=GRAY, font=load_font(38), anchor="mm")
 
