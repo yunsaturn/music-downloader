@@ -1,7 +1,6 @@
 /* ================================================================
    뮤직 다운 — YouTube IFrame API 기반 재생
    재생: 브라우저가 직접 YouTube에 접속 (서버 IP 무관)
-   다운: 서버 경유 MP3 변환
 ================================================================ */
 
 /* ── DOM ─────────────────────────────────────────── */
@@ -151,21 +150,12 @@ function renderList(videos) {
         <button class="icon-btn play-btn" data-index="${i}" aria-label="재생">
           ${SVG_PLAY}
         </button>
-        <button class="icon-btn dl-btn" data-index="${i}" aria-label="다운로드">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 4v12m0 0-4-4m4 4 4-4"/><path d="M4 20h16"/>
-          </svg>
-        </button>
       </div>`;
     videoList.appendChild(li);
   });
 
   videoList.querySelectorAll(".play-btn").forEach(btn =>
     btn.addEventListener("click", () => playTrack(+btn.dataset.index))
-  );
-  videoList.querySelectorAll(".dl-btn").forEach(btn =>
-    btn.addEventListener("click", () => downloadTrack(+btn.dataset.index))
   );
 }
 
@@ -220,55 +210,6 @@ progressBar.addEventListener("click", e => {
   ytPlayer.seekTo(pct * ytPlayer.getDuration(), true);
 });
 
-/* ── 다운로드 ─────────────────────────────────────── */
-const DL_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-  stroke-linecap="round" stroke-linejoin="round">
-  <path d="M12 4v12m0 0-4-4m4 4 4-4"/><path d="M4 20h16"/></svg>`;
-
-const SPIN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-  <circle cx="12" cy="12" r="9" stroke-dasharray="56" stroke-dashoffset="20"
-    style="animation:spin .9s linear infinite;transform-origin:center"/></svg>`;
-
-async function downloadTrack(index) {
-  const v   = results[index];
-  const btn = videoList.querySelector(`.dl-btn[data-index="${index}"]`);
-  if (!btn) return;
-
-  btn.innerHTML = SPIN_SVG;
-  btn.classList.add("loading-btn");
-
-  try {
-    const res = await fetch(`/api/download/${encodeURIComponent(v.video_id)}`);
-
-    if (res.ok) {
-      // 성공 → blob으로 받아서 저장
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = v.title + ".mp3";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      if (data.error === "BOT_DETECTED") {
-        showToast("🤖 YouTube가 봇으로 감지했습니다.\n관리자: PROXY_URL/쿠키 갱신 필요");
-      } else if (data.error === "BLOCKED") {
-        showToast("🚧 이 영상은 현재 IP에서 추출 불가합니다.\n프록시 설정을 확인해주세요");
-      } else {
-        showToast("다운로드 실패: " + (data.error || res.status));
-      }
-    }
-  } catch (e) {
-    showToast("네트워크 오류: " + e.message);
-  } finally {
-    btn.innerHTML = DL_SVG;
-    btn.classList.remove("loading-btn");
-  }
-}
-
 /* ── UI 헬퍼 ─────────────────────────────────────── */
 function setPlayerIcon(showPlay) {
   playPauseBtn.innerHTML = showPlay ? SVG_PLAY : SVG_PAUSE;
@@ -293,7 +234,7 @@ function showEmpty() {
   videoList.innerHTML = "";
   emptyState.hidden = false;
   emptyState.querySelector(".empty-title").textContent = "음악을 검색해보세요";
-  emptyState.querySelector(".empty-sub").textContent   = "YouTube에서 원하는 곡을 찾아 재생하거나 MP3로 저장하세요";
+  emptyState.querySelector(".empty-sub").textContent   = "YouTube에서 원하는 곡을 찾아 재생하세요";
 }
 function showEmptyMsg(title, sub = "") {
   loadingEl.hidden  = true;
