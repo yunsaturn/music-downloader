@@ -22,11 +22,15 @@ def _init_cookies():
         return
     content = os.environ.get("COOKIES_CONTENT", "").strip()
     if content:
+        # Railway 환경변수는 줄바꿈이 리터럴 \n 으로 저장되는 경우가 있음 → 실제 개행으로 변환
+        content = content.replace("\\n", "\n").replace("\\t", "\t")
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
         tmp.write(content)
         tmp.close()
         _COOKIES_FILE = tmp.name
-        print(f"[cookies] 환경변수 COOKIES_CONTENT 로드됨")
+        # 쿠키 파일 유효성 간단 확인
+        line_count = content.count("\n")
+        print(f"[cookies] COOKIES_CONTENT 로드됨 — {line_count}줄, 경로={tmp.name}")
 
 _init_cookies()
 
