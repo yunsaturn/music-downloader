@@ -7,7 +7,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
-from flask import Flask, render_template, request, jsonify, send_file, after_this_request
+from flask import Flask, render_template, request, jsonify, send_file, Response, after_this_request
 import yt_dlp
 
 # ── 쿠키 초기화 ───────────────────────────────────
@@ -215,37 +215,49 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-# 포맷 선택자: 오디오 전용 우선, 없으면 최상위 포맷
-# ext 제한을 없애고 가장 넓게 잡음 (Railway IP 환경에서 제공 포맷이 다를 수 있음)
-AUDIO_FORMAT = "bestaudio/best"
+# ── cobalt.tools API ─────────────────────────────
+# Railway 데이터센터 IP는 YouTube에서 미디어 URL을 받지 못하므로
+# cobalt.tools 서버가 대신 추출해주는 방식으로 우회
+COBALT_API  = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools").rstrip("/")
+COBALT_AUTH = os.environ.get("COBALT_API_KEY", "").strip()
 
-# 다운로드 시 시도할 player_client 순서
-DOWNLOAD_CLIENTS = ["ios", "mweb", "web", None]
+def cobalt_get_download_url(video_id):
+    """cobalt API에 요청해서 MP3 다운로드 URL과 파일명 반환"""
+    yt_url  = f"https://www.youtube.com/watch?v={video_id}"
+    payload = json.dumps({
+        "url":           yt_url,
+        "downloadMode":  "audio",
+        "audioFormat":   "mp3",
+        "audioBitrate":  "256",
+        "filenameStyle": "basic",
+    }).encode("utf-8")
 
-def _make_dl_opts(extra, client=None):
-    """player_client 지정 가능한 yt-dlp 옵션 생성"""
-    opts = {"quiet": True, "no_warnings": True, **extra}
-    if client:
-        opts["extractor_args"] = {"youtube": {"player_client": [client]}}
-    if _COOKIES_FILE:
-        opts["cookiefile"] = _COOKIES_FILE
-    return opts
+    headers = {
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "User-Agent":   "music-downloader/1.0",
+    }
+    if COBALT_AUTH:
+        headers["Authorization"] = f"Api-Key {COBALT_AUTH}"
 
-def _download_with_fallback(video_id, extra):
-    """여러 player_client로 순차 시도 → 성공하면 info 반환"""
-    yt_url   = f"https://www.youtube.com/watch?v={video_id}"
-    last_err = None
-    for client in DOWNLOAD_CLIENTS:
-        opts = _make_dl_opts(extra, client)
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(yt_url, download=True)
-            print(f"[download] 성공 client={client}")
-            return info
-        except Exception as e:
-            print(f"[download] 실패 client={client}: {e}")
-            last_err = e
-    raise last_err
+    req = urllib.request.Request(COBALT_API + "/", data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            result = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"cobalt HTTP {e.code}: {body[:200]}")
+
+    status = result.get("status")
+    print(f"[cobalt] status={status}")
+
+    if status in ("tunnel", "redirect"):
+        return result["url"], result.get("filename") or f"{video_id}.mp3"
+    if status == "error":
+        err  = result.get("error", {}) or {}
+        code = err.get("code", "unknown")
+        raise RuntimeError(f"cobalt error: {code}")
+    raise RuntimeError(f"cobalt unsupported status: {status}")
 
 
 @app.route("/api/stream/<video_id>")
@@ -299,51 +311,52 @@ def debug_formats(video_id):
 
 @app.route("/api/download/<video_id>")
 def download(video_id):
-    tmp_dir    = tempfile.mkdtemp()
-    has_ffmpeg = ffmpeg_available()
-    extra      = {
-        "format":  AUDIO_FORMAT,
-        "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
-    }
-    if has_ffmpeg:
-        extra["postprocessors"] = [{"key": "FFmpegExtractAudio",
-                                    "preferredcodec": "mp3", "preferredquality": "192"}]
-        target_ext, mime = ".mp3", "audio/mpeg"
-    else:
-        target_ext, mime = None, "audio/mp4"
-
+    """cobalt.tools API로 추출한 MP3를 클라이언트로 스트리밍"""
     try:
-        info  = _download_with_fallback(video_id, extra)
-        title = info.get("title", video_id)
-
-        if target_ext:
-            files = [f for f in os.listdir(tmp_dir) if f.endswith(target_ext)]
-        else:
-            files = [f for f in os.listdir(tmp_dir)
-                     if f.endswith((".m4a", ".webm", ".ogg", ".opus", ".mp3"))]
-        if not files:
-            return jsonify({"error": "NO_FILE"}), 500
-
-        audio_path = os.path.join(tmp_dir, files[0])
-        actual_ext = os.path.splitext(files[0])[1]
-
-        @after_this_request
-        def cleanup(response):
-            threading.Thread(target=lambda: (
-                os.remove(audio_path), os.rmdir(tmp_dir)
-            ), daemon=True).start()
-            return response
-
-        safe    = "".join(c for c in title if c not in r'\/:*?"<>|').strip()
-        dl_name = f"{safe}.mp3" if has_ffmpeg else f"{safe}{actual_ext}"
-        return send_file(audio_path, as_attachment=True, download_name=dl_name, mimetype=mime)
-
+        file_url, filename = cobalt_get_download_url(video_id)
     except Exception as ex:
         err = str(ex)
-        # 봇 감지 / 인증 필요 에러 → 사용자 친화적 메시지
-        if "sign in" in err.lower() or "bot" in err.lower() or "confirm" in err.lower():
-            return jsonify({"error": "COOKIE_REQUIRED"}), 403
-        return jsonify({"error": err}), 500
+        print(f"[download] cobalt 실패: {err}")
+        # 봇 차단성 에러 메시지 매핑
+        low = err.lower()
+        if "rate" in low or "429" in low:
+            return jsonify({"error": "RATE_LIMITED"}), 429
+        if "auth" in low or "401" in low or "403" in low:
+            return jsonify({"error": "COBALT_AUTH_REQUIRED"}), 403
+        return jsonify({"error": err}), 502
+
+    # cobalt이 준 URL에서 파일을 스트리밍해 클라이언트로 전달
+    try:
+        upstream = urllib.request.urlopen(
+            urllib.request.Request(file_url, headers={"User-Agent": "music-downloader/1.0"}),
+            timeout=180,
+        )
+    except Exception as ex:
+        return jsonify({"error": f"파일 다운로드 실패: {ex}"}), 502
+
+    def stream():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    safe = "".join(c for c in filename if c not in r'\/:*?"<>|').strip() or f"{video_id}.mp3"
+    # 한글 파일명을 위해 RFC 5987 인코딩 병행
+    encoded   = urllib.parse.quote(safe)
+    disposition = f"attachment; filename=\"{video_id}.mp3\"; filename*=UTF-8''{encoded}"
+
+    return Response(
+        stream(),
+        mimetype="audio/mpeg",
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control":       "no-store",
+        },
+    )
 
 
 if __name__ == "__main__":
