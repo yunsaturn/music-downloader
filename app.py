@@ -215,12 +215,11 @@ def search():
                 pass
         return jsonify({"error": str(ex)}), 500
 
-AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+# 포맷 선택자: 오디오 전용 우선, 없으면 최상위 포맷
+# ext 제한을 없애고 가장 넓게 잡음 (Railway IP 환경에서 제공 포맷이 다를 수 있음)
+AUDIO_FORMAT = "bestaudio/best"
 
 # 다운로드 시 시도할 player_client 순서
-# ios → 데이터센터 IP 차단 우회 효과 있음
-# web → 일반적인 클라이언트
-# None → 클라이언트 지정 없음 (기본값)
 DOWNLOAD_CLIENTS = ["ios", "mweb", "web", None]
 
 def _make_dl_opts(extra, client=None):
@@ -253,6 +252,31 @@ def _download_with_fallback(video_id, extra):
 def stream(video_id):
     """재생은 IFrame API가 담당 — 이 엔드포인트는 미사용"""
     return jsonify({"error": "재생은 브라우저 IFrame API를 사용합니다"}), 400
+
+
+@app.route("/api/debug/<video_id>")
+def debug_formats(video_id):
+    """쿠키·포맷 진단용 엔드포인트 (배포 후 브라우저에서 직접 호출)"""
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    opts = {**stream_ydl_opts(), "skip_download": True, "quiet": False}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(yt_url, download=False)
+        fmts = [
+            {"id": f.get("format_id"), "ext": f.get("ext"),
+             "acodec": f.get("acodec"), "vcodec": f.get("vcodec"),
+             "abr": f.get("abr"), "filesize": f.get("filesize")}
+            for f in (info.get("formats") or [])
+        ]
+        return jsonify({
+            "cookie_file": _COOKIES_FILE,
+            "cookie_loaded": bool(_COOKIES_FILE),
+            "title": info.get("title"),
+            "format_count": len(fmts),
+            "formats": fmts,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "cookie_file": _COOKIES_FILE}), 500
 
 
 @app.route("/api/download/<video_id>")
